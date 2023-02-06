@@ -328,6 +328,8 @@ Per le istruzioni di branch abbiamo tutte le informazioni necessarie per renderc
 
    Devo scrivere quindi tutti zeri nel registro IF/ID e per farlo posso utilizzare la porta di reset presente nei FLIP-FLOP di cui è composto il registro, quindi <u>il Flush del registro IF/ID si ottiene tramite l'invio del segnale reset ai flip-flop presenti nel registro</u>
 
+   > Un metodo alternativo per gestire l'istruzione seguente alla branch è l'utilizzo del branch delay slot, ovvero riordinare le istruzioni in modo tale da inserire dopo la branch un'istruzione che deve essere eseguita in ogni caso. In questo modo anche se il salto deve essere effettuato non dobbiamo fare il flush dell'istruzione attualmente in IF
+
 ##### Soluzione 4 - scartare istruzioni
 
 Posso supporre che il salto non venga effettuato, se effettivamente non viene effettuato non devo fare nient'altro. Altrimenti se il salto viene preso (me ne accorgo quando la branch è in fase di MEM) devo scartare le 3 istruzioni che ho già caricato nella pipeline per errore e che devo buttare via, questa operazione di "buttare via" si chiama flush (svuotamento brusco)
@@ -399,3 +401,137 @@ Vediamo cosa c'è nel BPB:
 Con il branch prediction buffer ad 1 bit abbiamo quindi <u>2 errori per ogni ciclo</u>.
 
 Posso migliorare questo risultato utilizzando una macchina a stati finiti che commuti la predizione solo quando si verificano 2 errori consecutivi. (BPB a 2 bit)
+
+## Interrupt ed eccezioni
+
+Eventi che alternano il normale funzionamento della CPU.
+
+**Interrupt**: segnali di richiesta di attenzione provenienti dall'esterno della CPU (I/O, rete, stampante, ...) che devono essere gestiti dalla CPU. Un interrupt può essere gestito dalla CPU nel momento in cui viene ritenuto opportuno non essendo legato ad una specifica istruzione.
+
+**Eccezioni**: eventi che si verificano all'interno della CPU stessa durante l'esecuzione (overflow, opcode non riconosciuto, ...). Un'eccezione, essendo legata ad una specifica istruzione, deve essere gestita immediatamente dal processore
+
+| Tipo di evento                                                      | Provenienza | Terminologia MIPS     |
+| ------------------------------------------------------------------- | ----------- | --------------------- |
+| Richiesta da un dispositivo di I/O                                  | Esterna     | Interrupt             |
+| Chiamata al SO da parte di un programma<br>(es: richiesta al disco) | Interna     | Eccezione             |
+| Overflow                                                            | Interna     | Eccezione             |
+| Opcode non definito                                                 | Interna     | Eccezione             |
+| Malfunzionamento HW                                                 | Entrambe    | Eccezione o Interrupt |
+
+### Risposta alle eccezioni
+
+La risposta alle eccezioni avviene via software (gestita dal Sistema Operativo) ma serve comunque una parte hardware come struttura di base per la gestione.
+
+La parte hardware della CPU deve occuparsi di riconoscere quando si verifica un'eccezione e mettere in esecuzione la porzione di codice del sistema operativo che si occupa della gestione.
+
+Ci sono due tecniche utilizzate per fornire la risposta:
+
+#### Risposta vettorizzata: (Intel)
+
+Per ogni eccezione esiste un particolare indirizzo di memoria dove si trova il codice definito dal SO per gestire quella particolare eccezione. Quando si verifica un'eccezione la CPU legge dalla Jump Allocation Table il record corrispondente al codice dell'eccezione, prende da quel record l'indirizzo dell'istruzione di gestione corrispondente e la scrive nel PC.
+
+<span style="color:red; font-weight: bold">Intel real mode e protected mode??</span>
+
+#### Tramite registro: (MIPS)
+
+C'è un unico indirizzo di memoria dove si trova la prima istruzione per la gestione di tutte le eccezioni, il codice corrispondente alla causa dell'eccezione viene memorizzata nel registro `causa`.  
+ Quando si verifica un'eccezione la CPU scrive nel registro causa il codice relativo alla causa dell'istruzione e nel PC l'indirizzo della prima istruzione della gestione delle eccezioni, il codice per la gestione delle eccezioni legge il registro causa e decide cosa fare in base al tipo di eccezione.  
+Il registro causa in MIPS è contenuto in un register file secondario detto coprocessore 0.
+
+##### Coprocessore 0:
+
+Il coprocessore 0 è un register file di appoggio con 32 registri della stessa dimensione delle istruzioni dell'architettura (32bit, 64bit, ...) che contiene varie informazioni sullo stato della macchina.
+
+Quelli interessanti per noi sono:
+
+- <u>Status</u>:  
+  maschera degli interrupt e bit di abilitazione interrupt (stato di gestione attuale della CPU)
+- <u>Causa</u>:  
+  codice specifico della causa dell'eccezione (dal bit 2 al bit 6)  
+  pending interrupts per gestire gli <b>interrupt multipli</b> (dal bit 8 al bit 15)
+- <u>EPC</u>:  
+  contiene l'indirizzo dell'istruzione che ha causato l'eccezione, se posso riprendere l'esecuzione riprendo da qui
+
+##### Procedura di gestione di un'eccezione tramite registro:
+
+1. Identificazione:  
+   La prima cosa da fare è ovviamente identificare l'eccezione, ovvero rendersi conto che si è verificata.  
+   Questa operazione deve essere fatta in diversi modi in base al tipo di eccezione, ad esempio:
+
+   - per un'eccezione di overflow possiamo utilizzare il segnale di overflow in uscita dalla ALU
+   - per un'eccezione di opcode non valido utilizzo il segnale opcode non valido generato dalla UC
+
+2. Flush delle istruzioni successive:  
+   Flush delle istruzioni che sono già state caricate nella pipeline in fasi precedenti a quella che ha generato l'eccezione
+3. Scrittura nel coprocessore 0:  
+   A questo punto è necessario andare a scrivere la causa dell'eccezione (causa) e l'indirizzo dell'istruzione (EPC)
+
+4. Passaggio a Exception Handler:  
+   Scrittura nel PC dell'indirizzo della prima istruzione del programma di risposta alle eccezioni
+5. Gestione dell'eccezione:  
+   A questo punto il codice dell'exception handler legge la causa dell'eccezione e agisce di conseguenza
+6. Riprendo l'esecuzione:  
+   Se l'eccezione permette di riprendere l'esecuzione ritorno all'istruzione che ha causato l'istruzione o a quella successiva
+
+### Risposta agli interrupt
+
+La risposta agli interrupt, come la risposta alle eccezioni, avviene via software gestita dal sistema operativo. Ciò nonostante anche per gestire gli interrupt è necessario il supporto della CPU, in particolare del <b> coprocessore 0 </b>.
+
+Bisogna notare inoltre che gli interrupt, a differenza delle eccezioni, possono verificarsi contemporaneamente.  
+Diventa quindi necessario utilizzare dei meccanismi per stabilire una priorità fra gli interrupt e poter mettere in attesa la gestione di un interrupt quando se ne verifica uno con una priorità maggiore.
+
+#### Gestione di interrupt multipli:
+
+Possono essere utilizzati diversi meccanismi per gestire gli interrupt multipli, in particolare:
+
+- Maschere di interrupt:  
+  Suddividiamo gli interrupt in livelli di priorità (8 livelli, 1 è quello con priorità maggiore) <span style="color: red; font-weight:bold">  
+  Ogni volta che riceviamo un interrupt la causa dell'interrupt viene caricata nel registro causa del coprocessore 0 e nei bit 8-15 viene scritto il livello dell'interrupt, se il livello dell'interrupt è inferiore rispetto a quello attualmente presente nel registro stato del coprocessore 0 (sempre dal bit 8 al 15) sostituiamo l'interrupt attualmente in gestione con quello appena arrivato.</span>
+- Priorità di interrupt:  
+  Ad ogni interrupt viene associata una priorità (es: in Intel dove sono gestiti in base al loro numero, gli interrupt con numero più basso sono quelli con priorità più alta)
+
+### Gestione software di interrupt ed eccezioni (parte del sistema operativo)
+
+Abbiamo visto che i registri per la gestione delle eccezioni e degli interrupt si trovato nel coprocessore 0, fuori dal datapath della CPU.
+Per il passaggio dei dati fra la CPU e il coprocessore 0 sono previste due istruzioni specifiche:
+
+> i registri causa e EPC sono rispettivamente i registri 13 e 14 del coprocessore 0
+
+```
+mft0 $k0 $13 #copia il contenuto di `causa` in $k0
+mtc0 $k1 $14 #copia il contenuto di $k1 in `EPC`
+```
+
+###### Esempio di SW per la gestione delle eccezioni e interrupt
+
+1. Leggo i registri causa e EPC dal coprocessore 0
+2. Estraggo la causa dell'eccezione dal registro causa (dal bit 2 al bit 6)
+3. Se l'eccezione è un interrupt (causa = 0), termino
+4. Gestisco l'eccezione (in questo caso la stampo a schermo)
+5. Ripristino lo stato
+
+```
+# Leggo i registri causa e EPC dal coprocessore 0
+
+mfc0 $k0 $13      #causa
+mfc0 $a1 $14      #EPC
+
+# Estraggo la causa dell'eccezione dal registro causa
+
+srl  $a0 $k0 2    #shift a destra di 2 (allineo causa con 0)
+andi $a0 $a0 0x1f #estrazione dei bit da 0 a 4 (maschera)
+
+# Se l'eccezione è un interrupt (causa = 0), termino
+
+beq $a0 $zero dopo
+
+# Gestisco l'eccezione (in questo caso la stampo a schermo)
+
+jal print_exception
+
+# Ripristino lo stato
+
+...
+
+
+```
